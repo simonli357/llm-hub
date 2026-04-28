@@ -1,0 +1,78 @@
+name: llm-hub
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - litellm-postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-latest
+    restart: unless-stopped
+    network_mode: host
+    command: ["--config", "/app/config.yaml", "--host", "127.0.0.1", "--port", "4010"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@127.0.0.1:5433/litellm
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      WEBUI_NAME: Local LLM Hub
+      WEBUI_URL: ${PUBLIC_WEBUI_URL}
+      PORT: "3000"
+      WEBUI_AUTH: "True"
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      WEBUI_ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL}
+      WEBUI_ADMIN_PASSWORD: ${WEBUI_ADMIN_PASSWORD}
+      ENABLE_SIGNUP: "False"
+      ENABLE_OLLAMA_API: "False"
+      OPENAI_API_BASE_URL: http://127.0.0.1:4010/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+      DEFAULT_MODELS: qwen3.6-27b
+      AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST: "30"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      - litellm
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - open-webui
+      - litellm
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel --no-autoupdate --url http://127.0.0.1:8090
+    depends_on:
+      - caddy
+
+volumes:
+  litellm-postgres:
+  open-webui-data:
