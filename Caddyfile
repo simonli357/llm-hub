@@ -9,10 +9,22 @@
 	# Stage 1 quick tunnel:
 	#   https://<random>.trycloudflare.com/   -> Open WebUI
 	#   https://<random>.trycloudflare.com/v1 -> LiteLLM
+	#   https://<random>.trycloudflare.com/codex/v1 -> Codex compatibility gateway
 	#
 	# Stage 2 should use Cloudflare Tunnel ingress rules instead:
 	#   llm.your-domain.com -> http://127.0.0.1:8090
 	#   api.your-domain.com -> http://127.0.0.1:4010
+	#   api.your-domain.com/codex -> http://127.0.0.1:4020/codex
+	@codex_setup path /codex/setup.sh
+	handle @codex_setup {
+		reverse_proxy 127.0.0.1:4020
+	}
+
+	@codex_api path /codex/v1 /codex/v1/*
+	handle @codex_api {
+		reverse_proxy 127.0.0.1:4020
+	}
+
 	@api path /v1 /v1/*
 	handle @api {
 		reverse_proxy 127.0.0.1:4010

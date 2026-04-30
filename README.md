@@ -11,6 +11,7 @@ Users / API clients
   -> Cloudflare quick tunnel
   -> Caddy on 127.0.0.1:8090
   -> Open WebUI on 127.0.0.1:3000
+  -> Codex proxy on 127.0.0.1:4020
   -> LiteLLM on 127.0.0.1:4010
   -> llama.cpp on 127.0.0.1:8081
 ```
@@ -19,6 +20,7 @@ Users / API clients
 
 - `qwen36-llama.service`: persistent local Qwen3.6-27B model worker
 - `litellm`: OpenAI-compatible router on `http://localhost:4010/v1`
+- `codex-proxy`: Codex Responses compatibility gateway on `http://localhost:4020/codex/v1`
 - `open-webui`: patched/pinned browser chat UI on `http://localhost:3000`
 - `searxng`: private local metasearch backend on `http://127.0.0.1:8082`
 - `caddy`: local gateway on `http://localhost:8090`
@@ -29,6 +31,7 @@ The quick tunnel exposes:
 
 - `/` -> Open WebUI
 - `/v1/*` -> LiteLLM
+- `/codex/v1/*` -> Codex compatibility gateway
 
 ## Secrets
 
@@ -136,14 +139,33 @@ http://localhost:8090/v1
 https://<quick-tunnel>.trycloudflare.com/v1
 ```
 
-For coding agents such as Codex, Claude Code, and OpenClaw, see
-`AGENT_API.md`. The production API plan is one LiteLLM virtual key per user or
-per agent, with the browser UI and agent API split across separate hostnames:
+Use the Codex compatibility endpoint for Codex CLI:
+
+```text
+http://localhost:8090/codex/v1
+https://<quick-tunnel>.trycloudflare.com/codex/v1
+```
+
+For one-command Codex CLI setup:
+
+```bash
+curl -fsSL https://<quick-tunnel>.trycloudflare.com/codex/setup.sh | bash
+```
+
+For Codex CLI setup details, see `CODEX_SETUP.md`. For coding-agent API details
+across Codex, Claude Code, and OpenClaw, see `AGENT_API.md`. The production API
+plan is one LiteLLM virtual key per user or per agent, with the browser UI and
+agent API split across separate hostnames:
 
 ```text
 https://llm.your-domain.com
 https://api.your-domain.com
 ```
+
+The Codex endpoint is separate because Codex may send native OpenAI Responses
+tool types that the local llama.cpp path does not accept. The gateway preserves
+function tools and drops unsupported native tool entries before forwarding to
+LiteLLM.
 
 Example local model list:
 
@@ -230,6 +252,7 @@ curl -s 'http://127.0.0.1:8082/search?q=Open%20WebUI&format=json' \
 curl -s http://127.0.0.1:8081/v1/models
 curl -s 'http://127.0.0.1:8082/search?q=test&format=json'
 curl -s http://127.0.0.1:8090/
+curl -s http://127.0.0.1:8090/codex/v1/models
 docker compose ps
 ```
 
@@ -237,6 +260,7 @@ Check logs:
 
 ```bash
 docker compose logs -f litellm
+docker compose logs -f codex-proxy
 docker compose logs -f open-webui
 docker compose logs -f cloudflared
 tail -f /home/adventor/simon/logs/qwen36-server.log

@@ -7,6 +7,7 @@ The hub exposes the API shapes that common coding agents expect:
 
 - OpenAI Chat Completions: `/v1/chat/completions`
 - OpenAI Responses: `/v1/responses`
+- Codex Responses compatibility: `/codex/v1/responses`
 - Anthropic Messages: `/v1/messages`
 - Anthropic token counting: `/v1/messages/count_tokens`
 
@@ -20,7 +21,8 @@ Both public model names are local Qwen routes:
 Stage 1 quick tunnel:
 
 ```text
-OpenAI/Codex/OpenClaw base URL: https://<quick-tunnel>.trycloudflare.com/v1
+OpenAI/OpenClaw base URL:      https://<quick-tunnel>.trycloudflare.com/v1
+Codex base URL:                https://<quick-tunnel>.trycloudflare.com/codex/v1
 Claude Code base URL:          https://<quick-tunnel>.trycloudflare.com
 ```
 
@@ -28,13 +30,15 @@ Current local test URLs:
 
 ```text
 OpenAI-compatible base URL: http://127.0.0.1:8090/v1
+Codex-compatible base URL:  http://127.0.0.1:8090/codex/v1
 Anthropic-compatible base:  http://127.0.0.1:8090
 ```
 
 Stage 2 production URLs:
 
 ```text
-OpenAI/Codex/OpenClaw base URL: https://api.your-domain.com/v1
+OpenAI/OpenClaw base URL:      https://api.your-domain.com/v1
+Codex base URL:                https://api.your-domain.com/codex/v1
 Claude Code base URL:          https://api.your-domain.com
 Browser UI URL:                https://llm.your-domain.com
 ```
@@ -102,7 +106,7 @@ model_provider = "llm-hub"
 
 [model_providers.llm-hub]
 name = "Local LLM Hub"
-base_url = "https://api.your-domain.com/v1"
+base_url = "https://api.your-domain.com/codex/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 ```
@@ -110,10 +114,15 @@ wire_api = "responses"
 During the Stage 1 quick-tunnel pilot, use:
 
 ```toml
-base_url = "https://<quick-tunnel>.trycloudflare.com/v1"
+base_url = "https://<quick-tunnel>.trycloudflare.com/codex/v1"
 ```
 
 Use `model = "qwen3.6-27b-thinking"` when you want the reasoning alias.
+
+Codex should use the `/codex/v1` gateway rather than raw `/v1`. Codex sends
+native OpenAI Responses tool types such as `image_generation` that llama.cpp
+rejects. The gateway keeps function tools and strips unsupported native tool
+entries before forwarding to LiteLLM.
 
 ## Claude Code
 

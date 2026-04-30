@@ -32,6 +32,22 @@ services:
       postgres:
         condition: service_healthy
 
+  codex-proxy:
+    image: python:3.12-alpine
+    restart: unless-stopped
+    network_mode: host
+    command: ["python", "/app/codex_proxy.py"]
+    environment:
+      CODEX_PROXY_HOST: 127.0.0.1
+      CODEX_PROXY_PORT: "4020"
+      CODEX_PROXY_PATH_PREFIX: /codex
+      CODEX_PROXY_UPSTREAM_BASE_URL: http://127.0.0.1:4010
+    volumes:
+      - ./codex-proxy/codex_proxy.py:/app/codex_proxy.py:ro
+      - ./scripts/setup-codex-cli:/app/setup-codex-cli.sh:ro
+    depends_on:
+      - litellm
+
   open-webui:
     image: llm-hub-open-webui:0.9.2-file-context
     build:
@@ -91,6 +107,7 @@ services:
     depends_on:
       - open-webui
       - litellm
+      - codex-proxy
 
   cloudflared:
     image: cloudflare/cloudflared:latest

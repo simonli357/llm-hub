@@ -1,0 +1,448 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_BASE_URL="__CODEX_LLM_HUB_BASE_URL__"
+MODEL_CATALOG_FILE_NAME="llm-hub-model-catalog.json"
+
+usage() {
+  cat <<'USAGE'
+Usage: setup-codex-cli [options]
+
+Sets up Codex CLI for this llm-hub:
+  - writes ~/.codex/config.toml profiles
+  - writes ~/.codex/llm-hub-model-catalog.json
+  - writes ~/.local/bin/codex-llm-hub
+  - writes ~/.local/bin/codex-llm-hub-thinking
+
+Options:
+  --base-url URL       Codex gateway URL, for example https://host/codex/v1
+  --api-key KEY        LiteLLM API key. If omitted, the script prompts.
+  --no-store-key       Do not write ~/.config/llm-hub/codex.env.
+  --install-codex      Install @openai/codex with npm if codex is missing.
+  --no-install-codex   Do not install Codex CLI.
+  -h, --help           Show this help.
+USAGE
+}
+
+log() {
+  printf '%s\n' "$*"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+prompt_text() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local answer=""
+  [[ -r /dev/tty ]] || return 1
+  if [[ -n "$default_value" ]]; then
+    read -r -p "$prompt [$default_value]: " answer < /dev/tty
+    printf '%s' "${answer:-$default_value}"
+  else
+    read -r -p "$prompt: " answer < /dev/tty
+    printf '%s' "$answer"
+  fi
+}
+
+prompt_secret() {
+  local prompt="$1"
+  local answer=""
+  [[ -r /dev/tty ]] || return 1
+  read -r -s -p "$prompt: " answer < /dev/tty
+  printf '\n' > /dev/tty
+  printf '%s' "$answer"
+}
+
+normalize_base_url() {
+  local url="${1%/}"
+  case "$url" in
+    */codex/v1)
+      ;;
+    */v1)
+      url="${url%/v1}/codex/v1"
+      ;;
+    */codex)
+      url="$url/v1"
+      ;;
+    *)
+      url="$url/codex/v1"
+      ;;
+  esac
+  printf '%s' "$url"
+}
+
+toml_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+shell_profile_file() {
+  if [[ -n "${BASH_VERSION:-}" ]]; then
+    printf '%s/.bashrc' "$HOME"
+  elif [[ -n "${ZSH_VERSION:-}" ]]; then
+    printf '%s/.zshrc' "$HOME"
+  else
+    printf '%s/.profile' "$HOME"
+  fi
+}
+
+BASE_URL_SOURCE=default
+if [[ -n "${CODEX_LLM_HUB_BASE_URL:-}" ]]; then
+  BASE_URL="$CODEX_LLM_HUB_BASE_URL"
+  BASE_URL_SOURCE=env
+elif [[ -n "${OPENAI_BASE_URL:-}" ]]; then
+  BASE_URL="$OPENAI_BASE_URL"
+  BASE_URL_SOURCE=env
+else
+  BASE_URL="$DEFAULT_BASE_URL"
+fi
+API_KEY="${LLM_HUB_API_KEY:-${OPENAI_API_KEY:-}}"
+STORE_KEY=1
+INSTALL_CODEX=auto
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base-url)
+      [[ $# -ge 2 ]] || die "--base-url needs a value"
+      BASE_URL="$2"
+      BASE_URL_SOURCE=arg
+      shift 2
+      ;;
+    --api-key)
+      [[ $# -ge 2 ]] || die "--api-key needs a value"
+      API_KEY="$2"
+      shift 2
+      ;;
+    --no-store-key)
+      STORE_KEY=0
+      shift
+      ;;
+    --install-codex)
+      INSTALL_CODEX=1
+      shift
+      ;;
+    --no-install-codex)
+      INSTALL_CODEX=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+done
+
+if [[ "$BASE_URL" == "__CODEX_LLM_HUB_BASE_URL__" ]]; then
+  BASE_URL=""
+fi
+
+if [[ "$BASE_URL_SOURCE" == "default" ]]; then
+  BASE_URL="$(prompt_text "Codex gateway URL" "$BASE_URL" || true)"
+fi
+
+if [[ -z "$BASE_URL" ]]; then
+  BASE_URL="$(prompt_text "Codex gateway URL, for example https://host/codex/v1" || true)"
+fi
+
+[[ -n "$BASE_URL" ]] || die "base URL missing; pass --base-url https://host/codex/v1"
+BASE_URL="$(normalize_base_url "$BASE_URL")"
+
+if [[ -z "$API_KEY" ]]; then
+  API_KEY="$(prompt_secret "LiteLLM API key" || true)"
+fi
+
+[[ -n "$API_KEY" ]] || die "API key missing; set LLM_HUB_API_KEY or pass --api-key"
+
+if ! command -v codex >/dev/null 2>&1; then
+  if [[ "$INSTALL_CODEX" == "0" ]]; then
+    log "Codex CLI is not installed; skipping because --no-install-codex was set."
+  elif command -v npm >/dev/null 2>&1; then
+    log "Installing Codex CLI with npm..."
+    npm install -g @openai/codex
+  else
+    log "Codex CLI is not installed and npm was not found."
+    log "Install Node.js/npm, then run: npm install -g @openai/codex"
+  fi
+fi
+
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+BIN_DIR="$HOME/.local/bin"
+CONFIG_FILE="$CODEX_HOME/config.toml"
+CATALOG_FILE="$CODEX_HOME/$MODEL_CATALOG_FILE_NAME"
+ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/llm-hub"
+ENV_FILE="$ENV_DIR/codex.env"
+
+mkdir -p "$CODEX_HOME" "$BIN_DIR"
+
+profile_file="$(shell_profile_file)"
+touch "$profile_file"
+if ! grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$profile_file" >/dev/null 2>&1; then
+  {
+    printf '\n'
+    printf '# Added by llm-hub Codex setup\n'
+    printf 'export PATH="$HOME/.local/bin:$PATH"\n'
+  } >> "$profile_file"
+fi
+export PATH="$BIN_DIR:$PATH"
+
+cat > "$CATALOG_FILE" <<'JSON'
+{
+  "models": [
+    {
+      "slug": "qwen3.6-27b",
+      "display_name": "Local Qwen 27B",
+      "description": "Local Qwen3.6-27B through llm-hub, non-thinking mode.",
+      "default_reasoning_level": "minimal",
+      "supported_reasoning_levels": [
+        {
+          "effort": "minimal",
+          "description": "Use the non-thinking local model route."
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 100,
+      "additional_speed_tiers": [],
+      "availability_nux": null,
+      "upgrade": null,
+      "base_instructions": "You are Codex, a coding agent. Work carefully, use tools when useful, and keep responses concise.",
+      "model_messages": {
+        "instructions_template": "You are Codex, a coding agent. Work carefully, use tools when useful, and keep responses concise.\n\n{{ personality }}",
+        "instructions_variables": {
+          "personality_default": "",
+          "personality_friendly": "",
+          "personality_pragmatic": ""
+        }
+      },
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "default_verbosity": "low",
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 28000
+      },
+      "supports_parallel_tool_calls": false,
+      "supports_image_detail_original": false,
+      "context_window": 32768,
+      "max_context_window": 32768,
+      "effective_context_window_percent": 85,
+      "experimental_supported_tools": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": false
+    },
+    {
+      "slug": "qwen3.6-27b-thinking",
+      "display_name": "Local Qwen 27B Thinking",
+      "description": "Local Qwen3.6-27B through llm-hub with llama.cpp thinking enabled.",
+      "default_reasoning_level": "minimal",
+      "supported_reasoning_levels": [
+        {
+          "effort": "minimal",
+          "description": "Thinking is controlled by this model alias."
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 101,
+      "additional_speed_tiers": [],
+      "availability_nux": null,
+      "upgrade": null,
+      "base_instructions": "You are Codex, a coding agent. Work carefully, use tools when useful, and keep responses concise.",
+      "model_messages": {
+        "instructions_template": "You are Codex, a coding agent. Work carefully, use tools when useful, and keep responses concise.\n\n{{ personality }}",
+        "instructions_variables": {
+          "personality_default": "",
+          "personality_friendly": "",
+          "personality_pragmatic": ""
+        }
+      },
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "default_verbosity": "low",
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 28000
+      },
+      "supports_parallel_tool_calls": false,
+      "supports_image_detail_original": false,
+      "context_window": 32768,
+      "max_context_window": 32768,
+      "effective_context_window_percent": 85,
+      "experimental_supported_tools": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": false
+    }
+  ]
+}
+JSON
+
+tmp_config="$(mktemp)"
+if [[ -f "$CONFIG_FILE" ]]; then
+  awk '
+    /^\[profiles\."llm-hub"\]$/ { skip = 1; next }
+    /^\[profiles\."llm-hub-thinking"\]$/ { skip = 1; next }
+    /^\[model_providers\."llm-hub"\]$/ { skip = 1; next }
+    /^\[/ { skip = 0 }
+    !skip { print }
+  ' "$CONFIG_FILE" > "$tmp_config"
+else
+  : > "$tmp_config"
+fi
+
+catalog_toml="$(toml_escape "$CATALOG_FILE")"
+base_url_toml="$(toml_escape "$BASE_URL")"
+cat >> "$tmp_config" <<TOML
+
+[profiles."llm-hub"]
+model = "qwen3.6-27b"
+model_provider = "llm-hub"
+model_catalog_json = "$catalog_toml"
+model_context_window = 32768
+model_auto_compact_token_limit = 28000
+model_reasoning_effort = "minimal"
+personality = "none"
+web_search = "disabled"
+tools_view_image = false
+
+[profiles."llm-hub-thinking"]
+model = "qwen3.6-27b-thinking"
+model_provider = "llm-hub"
+model_catalog_json = "$catalog_toml"
+model_context_window = 32768
+model_auto_compact_token_limit = 28000
+model_reasoning_effort = "minimal"
+personality = "none"
+web_search = "disabled"
+tools_view_image = false
+
+[model_providers."llm-hub"]
+name = "Local LLM Hub"
+base_url = "$base_url_toml"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+TOML
+mv "$tmp_config" "$CONFIG_FILE"
+
+if [[ "$STORE_KEY" == "1" ]]; then
+  mkdir -p "$ENV_DIR"
+  chmod 700 "$ENV_DIR"
+  umask 077
+  {
+    printf 'export OPENAI_API_KEY=%q\n' "$API_KEY"
+    printf 'export CODEX_LLM_HUB_BASE_URL=%q\n' "$BASE_URL"
+  } > "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+fi
+
+cat > "$BIN_DIR/codex-llm-hub" <<'WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+env_file="${CODEX_LLM_HUB_ENV_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/llm-hub/codex.env}"
+if [[ -f "$env_file" ]]; then
+  source "$env_file"
+fi
+
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  echo "OPENAI_API_KEY is not set. Export your LiteLLM user key first." >&2
+  exit 1
+fi
+
+extra_config=()
+base_url="${CODEX_LLM_HUB_BASE_URL:-${OPENAI_BASE_URL:-}}"
+if [[ -n "$base_url" ]]; then
+  base_url="${base_url%/}"
+  if [[ "$base_url" == */codex/v1 ]]; then
+    :
+  elif [[ "$base_url" == */v1 ]]; then
+    base_url="${base_url%/v1}/codex/v1"
+  else
+    base_url="$base_url/codex/v1"
+  fi
+  extra_config=(-c "model_providers.llm-hub.base_url=\"$base_url\"")
+fi
+unset OPENAI_BASE_URL
+
+exec codex \
+  --profile llm-hub \
+  --disable apps \
+  --disable image_generation \
+  --disable multi_agent \
+  --disable plugins \
+  --disable tool_suggest \
+  -c 'analytics.enabled=false' \
+  "${extra_config[@]}" \
+  "$@"
+WRAPPER
+
+cat > "$BIN_DIR/codex-llm-hub-thinking" <<'WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+env_file="${CODEX_LLM_HUB_ENV_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/llm-hub/codex.env}"
+if [[ -f "$env_file" ]]; then
+  source "$env_file"
+fi
+
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  echo "OPENAI_API_KEY is not set. Export your LiteLLM user key first." >&2
+  exit 1
+fi
+
+extra_config=()
+base_url="${CODEX_LLM_HUB_BASE_URL:-${OPENAI_BASE_URL:-}}"
+if [[ -n "$base_url" ]]; then
+  base_url="${base_url%/}"
+  if [[ "$base_url" == */codex/v1 ]]; then
+    :
+  elif [[ "$base_url" == */v1 ]]; then
+    base_url="${base_url%/v1}/codex/v1"
+  else
+    base_url="$base_url/codex/v1"
+  fi
+  extra_config=(-c "model_providers.llm-hub.base_url=\"$base_url\"")
+fi
+unset OPENAI_BASE_URL
+
+exec codex \
+  --profile llm-hub-thinking \
+  --disable apps \
+  --disable image_generation \
+  --disable multi_agent \
+  --disable plugins \
+  --disable tool_suggest \
+  -c 'analytics.enabled=false' \
+  "${extra_config[@]}" \
+  "$@"
+WRAPPER
+
+chmod +x "$BIN_DIR/codex-llm-hub" "$BIN_DIR/codex-llm-hub-thinking"
+
+log "Codex llm-hub setup complete."
+log "Base URL: $BASE_URL"
+log "Config: $CONFIG_FILE"
+log "Helpers: $BIN_DIR/codex-llm-hub and $BIN_DIR/codex-llm-hub-thinking"
+if [[ "$STORE_KEY" == "1" ]]; then
+  log "Key env file: $ENV_FILE"
+else
+  log "Key was not stored; export OPENAI_API_KEY before running Codex."
+fi
+log ""
+log "Try: codex-llm-hub"
