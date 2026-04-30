@@ -45,6 +45,7 @@ services:
     volumes:
       - ./codex-proxy/codex_proxy.py:/app/codex_proxy.py:ro
       - ./scripts/setup-codex-cli:/app/setup-codex-cli.sh:ro
+      - ./scripts/setup-codex-cli.ps1:/app/setup-codex-cli.ps1:ro
     depends_on:
       - litellm
 

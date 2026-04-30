@@ -31,6 +31,10 @@ SETUP_SCRIPT_PATH = os.environ.get(
     "CODEX_PROXY_SETUP_SCRIPT",
     "/app/setup-codex-cli.sh",
 )
+SETUP_POWERSHELL_PATH = os.environ.get(
+    "CODEX_PROXY_SETUP_POWERSHELL",
+    "/app/setup-codex-cli.ps1",
+)
 
 
 BASE_INSTRUCTIONS = (
@@ -180,7 +184,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if upstream_path == "/setup.sh":
-            self._send_setup_script()
+            self._send_setup_script(SETUP_SCRIPT_PATH, "text/x-shellscript")
+            return
+
+        if upstream_path == "/setup.ps1":
+            self._send_setup_script(SETUP_POWERSHELL_PATH, "text/plain")
             return
 
         self._forward(upstream_path)
@@ -259,9 +267,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _send_setup_script(self) -> None:
+    def _send_setup_script(self, path: str, content_type: str) -> None:
         try:
-            with open(SETUP_SCRIPT_PATH, "r", encoding="utf-8") as handle:
+            with open(path, "r", encoding="utf-8") as handle:
                 script = handle.read()
         except OSError as exc:
             self._send_bytes(404, str(exc).encode("utf-8"), "text/plain")
@@ -284,7 +292,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(
             200,
             script.encode("utf-8"),
-            "text/x-shellscript; charset=utf-8",
+            f"{content_type}; charset=utf-8",
         )
 
     def log_message(self, fmt: str, *args) -> None:

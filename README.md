@@ -152,6 +152,12 @@ For one-command Codex CLI setup:
 curl -fsSL https://<quick-tunnel>.trycloudflare.com/codex/setup.sh | bash
 ```
 
+On Windows PowerShell:
+
+```powershell
+irm https://<quick-tunnel>.trycloudflare.com/codex/setup.ps1 | iex
+```
+
 For Codex CLI setup details, see `CODEX_SETUP.md`. For coding-agent API details
 across Codex, Claude Code, and OpenClaw, see `AGENT_API.md`. The production API
 plan is one LiteLLM virtual key per user or per agent, with the browser UI and

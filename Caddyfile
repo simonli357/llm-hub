@@ -15,7 +15,7 @@
 	#   llm.your-domain.com -> http://127.0.0.1:8090
 	#   api.your-domain.com -> http://127.0.0.1:4010
 	#   api.your-domain.com/codex -> http://127.0.0.1:4020/codex
-	@codex_setup path /codex/setup.sh
+	@codex_setup path /codex/setup.sh /codex/setup.ps1
 	handle @codex_setup {
 		reverse_proxy 127.0.0.1:4020
 	}
