@@ -40,7 +40,7 @@ Runtime secrets live in `.env`, which is intentionally ignored by Git.
 - `WEBUI_SECRET_KEY`: Open WebUI session/signing secret
 
 Do not share the LiteLLM master key broadly. For pilot users, create LiteLLM
-virtual keys later instead of handing out the master key.
+virtual keys with `scripts/litellm-key` instead of handing out the master key.
 
 ## Model Worker
 
@@ -134,6 +134,15 @@ Use the LiteLLM OpenAI-compatible endpoint:
 ```text
 http://localhost:8090/v1
 https://<quick-tunnel>.trycloudflare.com/v1
+```
+
+For coding agents such as Codex, Claude Code, and OpenClaw, see
+`AGENT_API.md`. The production API plan is one LiteLLM virtual key per user or
+per agent, with the browser UI and agent API split across separate hostnames:
+
+```text
+https://llm.your-domain.com
+https://api.your-domain.com
 ```
 
 Example local model list:
@@ -256,10 +265,16 @@ This Stage 1 setup uses a temporary `trycloudflare.com` quick tunnel. Before
 real multi-user use:
 
 - Move to a named Cloudflare Tunnel on a real Cloudflare-managed domain.
-- Add Cloudflare Access with an email allowlist.
+- Route `https://llm.your-domain.com` to Open WebUI for browser users.
+- Route `https://api.your-domain.com` directly to LiteLLM for coding agents and
+  API clients.
+- Add Cloudflare Access with an email allowlist for the browser UI.
 - Keep browser users behind both Cloudflare Access and Open WebUI auth.
-- Give API users LiteLLM virtual keys, and prefer Cloudflare Access service
-  tokens in front of `/v1`.
+- Give API users LiteLLM virtual keys only. Do not require Cloudflare Access
+  service-token headers on the API hostname unless every target client supports
+  custom Access headers.
+- Use Cloudflare DNS, WAF, and rate-limiting controls around the public API
+  hostname as needed.
 - Keep llama.cpp bound to localhost or a private network only.
 
 ## Important

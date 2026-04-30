@@ -6,6 +6,13 @@
 :8090 {
 	encode zstd gzip
 
+	# Stage 1 quick tunnel:
+	#   https://<random>.trycloudflare.com/   -> Open WebUI
+	#   https://<random>.trycloudflare.com/v1 -> LiteLLM
+	#
+	# Stage 2 should use Cloudflare Tunnel ingress rules instead:
+	#   llm.your-domain.com -> http://127.0.0.1:8090
+	#   api.your-domain.com -> http://127.0.0.1:4010
 	@api path /v1 /v1/*
 	handle @api {
 		reverse_proxy 127.0.0.1:4010

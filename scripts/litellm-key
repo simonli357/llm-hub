@@ -1,0 +1,554 @@
+#!/usr/bin/env python3
+"""Manage LiteLLM virtual keys for LLM hub agent users."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_ADMIN_URL = "http://127.0.0.1:4010"
+DEFAULT_HUB_URL = "http://127.0.0.1:8090"
+DEFAULT_MODELS = ("qwen3.6-27b", "qwen3.6-27b-thinking")
+
+
+class ProxyRequestError(RuntimeError):
+    def __init__(self, status: int, body: Any):
+        super().__init__(f"LiteLLM request failed with HTTP {status}")
+        self.status = status
+        self.body = body
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def load_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def config_value(name: str, env_file_values: dict[str, str], default: str | None = None) -> str | None:
+    return os.environ.get(name) or env_file_values.get(name) or default
+
+
+def split_models(value: str) -> list[str]:
+    models = [item.strip() for item in value.split(",") if item.strip()]
+    if not models:
+        raise argparse.ArgumentTypeError("at least one model is required")
+    return models
+
+
+def parse_metadata(values: list[str]) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    for item in values:
+        if "=" not in item:
+            raise SystemExit(f"metadata must be KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        metadata[key.strip()] = value.strip()
+    return metadata
+
+
+def default_alias(user: str, agent_id: str | None) -> str:
+    base = agent_id or user
+    safe = re.sub(r"[^A-Za-z0-9_.@-]+", "-", base).strip("-")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return f"{safe}-agent-{stamp}"
+
+
+def changed_by() -> str:
+    return os.environ.get("LITELLM_CHANGED_BY") or f"{getpass.getuser()}@litellm-key"
+
+
+def join_url(base_url: str, path: str) -> str:
+    return base_url.rstrip("/") + "/" + path.lstrip("/")
+
+
+def parse_body(text: str) -> Any:
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def http_json(
+    method: str,
+    base_url: str,
+    path: str,
+    token: str,
+    payload: Any | None = None,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: int = 600,
+) -> Any:
+    url = join_url(base_url, path)
+    if params:
+        clean_params = {k: v for k, v in params.items() if v is not None}
+        if clean_params:
+            url += "?" + urllib.parse.urlencode(clean_params, doseq=True)
+
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request_headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    if payload is not None:
+        request_headers["Content-Type"] = "application/json"
+    if headers:
+        request_headers.update(headers)
+
+    request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return parse_body(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = parse_body(exc.read().decode("utf-8", errors="replace"))
+        raise ProxyRequestError(exc.code, body) from exc
+
+
+def require_master_key(args: argparse.Namespace, env_values: dict[str, str]) -> str:
+    key = config_value("LITELLM_MASTER_KEY", env_values)
+    if not key:
+        raise SystemExit(
+            "Missing LITELLM_MASTER_KEY. Set it in the environment or in the repo .env file."
+        )
+    return key
+
+
+def redact_key(value: Any) -> Any:
+    if isinstance(value, str) and value.startswith("sk-") and len(value) > 14:
+        return value[:8] + "..." + value[-4:]
+    if isinstance(value, list):
+        return [redact_key(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_key(item) for key, item in value.items()}
+    return value
+
+
+def print_json(value: Any, redact: bool = True) -> None:
+    printable = redact_key(value) if redact else value
+    print(json.dumps(printable, indent=2, sort_keys=True))
+
+
+def command_generate(args: argparse.Namespace, env_values: dict[str, str]) -> None:
+    master_key = require_master_key(args, env_values)
+    models = split_models(args.models)
+    alias = args.alias or default_alias(args.user, args.agent_id)
+    metadata = {
+        "purpose": "coding-agent",
+        "issued_by": "scripts/litellm-key",
+    }
+    metadata.update(parse_metadata(args.metadata))
+
+    payload: dict[str, Any] = {
+        "key_alias": alias,
+        "user_id": args.user,
+        "duration": args.duration,
+        "models": models,
+        "rpm_limit": args.rpm_limit,
+        "tpm_limit": args.tpm_limit,
+        "metadata": metadata,
+    }
+    if args.agent_id:
+        payload["agent_id"] = args.agent_id
+    if args.max_parallel_requests is not None:
+        payload["max_parallel_requests"] = args.max_parallel_requests
+
+    body = http_json(
+        "POST",
+        args.admin_url,
+        "/key/generate",
+        master_key,
+        payload=payload,
+        headers={"litellm-changed-by": changed_by()},
+    )
+
+    if args.json:
+        print_json(body, redact=False)
+        return
+
+    print("Created LiteLLM virtual key")
+    print()
+    print("Save this key privately. It is only shown once by LiteLLM.")
+    print(f"key: {body['key']}")
+    print(f"alias: {body.get('key_alias')}")
+    print(f"user_id: {body.get('user_id')}")
+    print(f"models: {', '.join(body.get('models') or [])}")
+    print(f"rpm_limit: {body.get('rpm_limit')}")
+    print(f"tpm_limit: {body.get('tpm_limit')}")
+    print(f"expires: {body.get('expires')}")
+
+
+def key_summary(item: dict[str, Any]) -> str:
+    alias = item.get("key_alias") or ""
+    user = item.get("user_id") or ""
+    models = ",".join(item.get("models") or [])
+    rpm = item.get("rpm_limit") if item.get("rpm_limit") is not None else ""
+    tpm = item.get("tpm_limit") if item.get("tpm_limit") is not None else ""
+    expires = item.get("expires") or ""
+    blocked = item.get("blocked")
+    token = redact_key(item.get("token") or item.get("key") or "")
+    return (
+        f"alias={alias} user={user} token={token} models={models} "
+        f"rpm={rpm} tpm={tpm} expires={expires} blocked={blocked}"
+    )
+
+
+def command_list(args: argparse.Namespace, env_values: dict[str, str]) -> None:
+    master_key = require_master_key(args, env_values)
+    params = {
+        "page": args.page,
+        "size": args.size,
+        "user_id": args.user,
+        "key_alias": args.alias,
+        "return_full_object": True,
+    }
+    body = http_json("GET", args.admin_url, "/key/list", master_key, params=params)
+    if args.json:
+        print_json(body)
+        return
+
+    keys = body.get("keys", []) if isinstance(body, dict) else body
+    print(f"total_count: {body.get('total_count', len(keys)) if isinstance(body, dict) else len(keys)}")
+    for item in keys:
+        print(key_summary(item))
+
+
+def command_info(args: argparse.Namespace, env_values: dict[str, str]) -> None:
+    master_key = require_master_key(args, env_values)
+    body = http_json(
+        "GET",
+        args.admin_url,
+        "/key/info",
+        master_key,
+        params={"key": args.key},
+    )
+    print_json(body)
+
+
+def confirm_delete(args: argparse.Namespace) -> None:
+    if args.yes or not sys.stdin.isatty():
+        return
+    target = args.key or args.alias
+    answer = input(f"Delete LiteLLM key {target!r}? Type delete to continue: ")
+    if answer != "delete":
+        raise SystemExit("Aborted.")
+
+
+def command_delete(args: argparse.Namespace, env_values: dict[str, str]) -> None:
+    master_key = require_master_key(args, env_values)
+    confirm_delete(args)
+    payload = {"keys": [args.key]} if args.key else {"key_aliases": [args.alias]}
+    body = http_json(
+        "POST",
+        args.admin_url,
+        "/key/delete",
+        master_key,
+        payload=payload,
+        headers={"litellm-changed-by": changed_by()},
+    )
+    print_json(body)
+
+
+def command_block(args: argparse.Namespace, env_values: dict[str, str], blocked: bool) -> None:
+    master_key = require_master_key(args, env_values)
+    endpoint = "/key/block" if blocked else "/key/unblock"
+    body = http_json(
+        "POST",
+        args.admin_url,
+        endpoint,
+        master_key,
+        payload={"key": args.key},
+        headers={"litellm-changed-by": changed_by()},
+    )
+    print_json(body)
+
+
+def hub_root(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        return normalized[:-3].rstrip("/")
+    return normalized
+
+
+def expect_ok(label: str, func: Any) -> Any:
+    try:
+        body = func()
+    except ProxyRequestError as exc:
+        print(f"FAIL {label}: HTTP {exc.status}")
+        print_json(exc.body)
+        raise SystemExit(1) from exc
+    print(f"OK {label}")
+    return body
+
+
+def command_smoke(args: argparse.Namespace, env_values: dict[str, str]) -> None:
+    root = hub_root(args.base_url)
+    key = args.key
+    model = args.model
+
+    expect_ok(
+        "models",
+        lambda: http_json("GET", root, "/v1/models", key, timeout=args.timeout),
+    )
+    expect_ok(
+        "chat completions",
+        lambda: http_json(
+            "POST",
+            root,
+            "/v1/chat/completions",
+            key,
+            payload={
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with exactly: chat ok"}],
+                "max_tokens": 12,
+                "temperature": 0,
+                "stream": False,
+            },
+            timeout=args.timeout,
+        ),
+    )
+    expect_ok(
+        "responses",
+        lambda: http_json(
+            "POST",
+            root,
+            "/v1/responses",
+            key,
+            payload={
+                "model": model,
+                "input": "Reply with exactly: responses ok",
+                "max_output_tokens": 12,
+                "temperature": 0,
+            },
+            timeout=args.timeout,
+        ),
+    )
+    expect_ok(
+        "anthropic messages",
+        lambda: http_json(
+            "POST",
+            root,
+            "/v1/messages",
+            key,
+            payload={
+                "model": model,
+                "max_tokens": 12,
+                "messages": [{"role": "user", "content": "Reply with exactly: messages ok"}],
+            },
+            headers={"anthropic-version": "2023-06-01"},
+            timeout=args.timeout,
+        ),
+    )
+    expect_ok(
+        "anthropic token counting",
+        lambda: http_json(
+            "POST",
+            root,
+            "/v1/messages/count_tokens",
+            key,
+            payload={
+                "model": model,
+                "messages": [{"role": "user", "content": "Count this short prompt."}],
+            },
+            headers={"anthropic-version": "2023-06-01"},
+            timeout=args.timeout,
+        ),
+    )
+
+    tool_body = expect_ok(
+        "tool call request",
+        lambda: http_json(
+            "POST",
+            root,
+            "/v1/chat/completions",
+            key,
+            payload={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Use the get_project_status tool for project llm-hub.",
+                    }
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_project_status",
+                            "description": "Return project status.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "project": {"type": "string"},
+                                },
+                                "required": ["project"],
+                            },
+                        },
+                    }
+                ],
+                "tool_choice": {
+                    "type": "function",
+                    "function": {"name": "get_project_status"},
+                },
+                "max_tokens": 128,
+                "temperature": 0,
+                "stream": False,
+            },
+            timeout=args.timeout,
+        ),
+    )
+    message = tool_body.get("choices", [{}])[0].get("message", {})
+    if not message.get("tool_calls"):
+        print("FAIL tool call request: response did not include tool_calls")
+        print_json(tool_body)
+        raise SystemExit(1)
+
+    if args.deny_model:
+        try:
+            http_json(
+                "POST",
+                root,
+                "/v1/chat/completions",
+                key,
+                payload={
+                    "model": args.deny_model,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "max_tokens": 4,
+                    "stream": False,
+                },
+                timeout=args.timeout,
+            )
+        except ProxyRequestError as exc:
+            if 400 <= exc.status < 500:
+                print(f"OK denied model {args.deny_model}: HTTP {exc.status}")
+            else:
+                raise
+        else:
+            print(f"FAIL denied model {args.deny_model}: request succeeded")
+            raise SystemExit(1)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Manage LiteLLM virtual keys for local LLM hub agent users."
+    )
+    parser.add_argument(
+        "--env-file",
+        default=str(repo_root() / ".env"),
+        help="Path to the repo .env file. Defaults to %(default)s.",
+    )
+    parser.add_argument(
+        "--admin-url",
+        default=os.environ.get("LITELLM_ADMIN_URL", DEFAULT_ADMIN_URL),
+        help="LiteLLM admin base URL. Defaults to %(default)s.",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    generate = subparsers.add_parser("generate", help="Generate one virtual key.")
+    generate.add_argument("--user", required=True, help="User email or stable user id.")
+    generate.add_argument("--alias", help="Human-readable key alias.")
+    generate.add_argument("--agent-id", help="Optional stable agent id.")
+    generate.add_argument("--duration", default="30d", help="Key lifetime. Defaults to %(default)s.")
+    generate.add_argument("--models", default=",".join(DEFAULT_MODELS), help="Comma-separated model allowlist.")
+    generate.add_argument("--rpm-limit", type=int, default=10, help="Requests per minute limit.")
+    generate.add_argument("--tpm-limit", type=int, default=60000, help="Tokens per minute limit.")
+    generate.add_argument("--max-parallel-requests", type=int, help="Optional parallel request cap.")
+    generate.add_argument(
+        "--metadata",
+        action="append",
+        default=[],
+        help="Extra metadata as KEY=VALUE. Can be repeated.",
+    )
+    generate.add_argument("--json", action="store_true", help="Print raw JSON, including the new key.")
+    generate.set_defaults(func=command_generate)
+
+    list_keys = subparsers.add_parser("list", help="List virtual keys.")
+    list_keys.add_argument("--user", help="Filter by user id.")
+    list_keys.add_argument("--alias", help="Filter by key alias.")
+    list_keys.add_argument("--page", type=int, default=1)
+    list_keys.add_argument("--size", type=int, default=50)
+    list_keys.add_argument("--json", action="store_true")
+    list_keys.set_defaults(func=command_list)
+
+    info = subparsers.add_parser("info", help="Show metadata for one key.")
+    info.add_argument("--key", required=True)
+    info.set_defaults(func=command_info)
+
+    delete = subparsers.add_parser("delete", help="Revoke a virtual key.")
+    target = delete.add_mutually_exclusive_group(required=True)
+    target.add_argument("--key", help="Virtual key to revoke.")
+    target.add_argument("--alias", help="Key alias to revoke.")
+    delete.add_argument("--yes", action="store_true", help="Do not prompt for confirmation.")
+    delete.set_defaults(func=command_delete)
+
+    block = subparsers.add_parser("block", help="Temporarily block a virtual key.")
+    block.add_argument("--key", required=True)
+    block.set_defaults(func=lambda args, env: command_block(args, env, True))
+
+    unblock = subparsers.add_parser("unblock", help="Unblock a virtual key.")
+    unblock.add_argument("--key", required=True)
+    unblock.set_defaults(func=lambda args, env: command_block(args, env, False))
+
+    smoke = subparsers.add_parser("smoke", help="Run protocol smoke tests with a user key.")
+    smoke.add_argument("--key", required=True, help="LiteLLM virtual key to test.")
+    smoke.add_argument(
+        "--base-url",
+        default=os.environ.get("LLM_HUB_BASE_URL", DEFAULT_HUB_URL),
+        help="Hub root URL. Passing a /v1 URL is also accepted.",
+    )
+    smoke.add_argument("--model", default=DEFAULT_MODELS[0])
+    smoke.add_argument(
+        "--deny-model",
+        default="not-allowed-model",
+        help="Optional model name expected to fail. Use an empty string to skip.",
+    )
+    smoke.add_argument("--timeout", type=int, default=600)
+    smoke.set_defaults(func=command_smoke)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    env_values = load_env(Path(args.env_file))
+    try:
+        args.func(args, env_values)
+    except ProxyRequestError as exc:
+        print(f"HTTP {exc.status}", file=sys.stderr)
+        print_json(exc.body)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
