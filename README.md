@@ -20,6 +20,7 @@ Users / API clients
 - `qwen36-llama.service`: persistent local Qwen3.6-27B model worker
 - `litellm`: OpenAI-compatible router on `http://localhost:4010/v1`
 - `open-webui`: patched/pinned browser chat UI on `http://localhost:3000`
+- `searxng`: private local metasearch backend on `http://127.0.0.1:8082`
 - `caddy`: local gateway on `http://localhost:8090`
 - `cloudflared`: temporary `trycloudflare.com` quick tunnel to Caddy
 - `postgres`: LiteLLM database for future virtual keys and usage tracking
@@ -195,10 +196,30 @@ The patched image is tagged locally as:
 llm-hub-open-webui:0.9.2-file-context
 ```
 
+## Web Search
+
+Open WebUI web search is enabled with a private local SearXNG container:
+
+```text
+Open WebUI -> http://127.0.0.1:8082/search -> SearXNG
+```
+
+SearXNG is bound to loopback only. Users do not access it directly; they use the
+web-search control inside Open WebUI. Search queries leave the machine through
+the public search engines SearXNG queries, but no external LLM provider is used.
+
+Useful checks:
+
+```bash
+curl -s 'http://127.0.0.1:8082/search?q=Open%20WebUI&format=json' \
+  | python3 -m json.tool
+```
+
 ## Health Checks
 
 ```bash
 curl -s http://127.0.0.1:8081/v1/models
+curl -s 'http://127.0.0.1:8082/search?q=test&format=json'
 curl -s http://127.0.0.1:8090/
 docker compose ps
 ```
