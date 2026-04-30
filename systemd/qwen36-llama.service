@@ -13,6 +13,7 @@ Environment=BATCH_SIZE=1024
 Environment=UBATCH_SIZE=256
 Environment=PARALLEL=1
 Environment=REASONING=off
+Environment=ENABLE_VISION=1
 ExecStart=/home/adventor/simon/run-qwen36-27b-server.sh
 Restart=always
 RestartSec=5

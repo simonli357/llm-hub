@@ -33,7 +33,9 @@ services:
         condition: service_healthy
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    image: llm-hub-open-webui:0.9.2-file-context
+    build:
+      context: ./open-webui
     restart: unless-stopped
     network_mode: host
     environment:
@@ -45,11 +47,17 @@ services:
       WEBUI_ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL}
       WEBUI_ADMIN_PASSWORD: ${WEBUI_ADMIN_PASSWORD}
       ENABLE_SIGNUP: "False"
+      ENABLE_EVALUATION_ARENA_MODELS: "False"
       ENABLE_OLLAMA_API: "False"
       OPENAI_API_BASE_URL: http://127.0.0.1:4010/v1
       OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
       DEFAULT_MODELS: qwen3.6-27b
       AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST: "30"
+      SMALL_FILE_FULL_CONTEXT_MAX_BYTES: "131072"
+      RAG_TOP_K: "6"
+      CHUNK_SIZE: "1200"
+      CHUNK_OVERLAP: "150"
+      RAG_FULL_CONTEXT: "False"
     volumes:
       - open-webui-data:/app/backend/data
     depends_on:

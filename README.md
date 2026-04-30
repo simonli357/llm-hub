@@ -19,7 +19,7 @@ Users / API clients
 
 - `qwen36-llama.service`: persistent local Qwen3.6-27B model worker
 - `litellm`: OpenAI-compatible router on `http://localhost:4010/v1`
-- `open-webui`: browser chat UI on `http://localhost:3000`
+- `open-webui`: patched/pinned browser chat UI on `http://localhost:3000`
 - `caddy`: local gateway on `http://localhost:8090`
 - `cloudflared`: temporary `trycloudflare.com` quick tunnel to Caddy
 - `postgres`: LiteLLM database for future virtual keys and usage tracking
@@ -59,6 +59,29 @@ copy is:
 ```
 
 The worker is intentionally bound to `127.0.0.1:8081`.
+
+The local `llama.cpp` checkout is kept outside this repo:
+
+```text
+/home/adventor/simon/llama.cpp
+```
+
+Git remotes for that checkout:
+
+```text
+origin   git@github.com:simonli357/llama.cpp.git
+upstream https://github.com/ggml-org/llama.cpp.git
+```
+
+The known-good runtime source is pinned on the fork branch
+`local/qwen36-rtx5090-tested` at:
+
+```text
+f42e29fdf199481effd31f281bf095ec6067757b
+```
+
+`llama.cpp` is not a submodule yet. This keeps `llm-hub` focused on
+orchestration while still preserving the exact tested source in the fork.
 
 ## Start The Hub
 
@@ -119,6 +142,11 @@ curl -s http://localhost:4010/v1/models \
   -H "Authorization: Bearer $(grep '^LITELLM_MASTER_KEY=' .env | cut -d= -f2-)"
 ```
 
+Available model names:
+
+- `qwen3.6-27b`: normal non-thinking mode.
+- `qwen3.6-27b-thinking`: same local model with llama.cpp thinking enabled.
+
 Example local chat request through Caddy:
 
 ```bash
@@ -128,8 +156,44 @@ curl -s http://localhost:8090/v1/chat/completions \
   -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"Reply with exactly: ready"}],"max_tokens":8,"temperature":0,"stream":false}'
 ```
 
+Example reasoning request:
+
+```bash
+curl -s http://localhost:8090/v1/chat/completions \
+  -H "Authorization: Bearer $(grep '^LITELLM_MASTER_KEY=' .env | cut -d= -f2-)" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.6-27b-thinking","messages":[{"role":"user","content":"What is 17*23? Answer with only the number."}],"max_tokens":1400,"temperature":0,"stream":false}'
+```
+
+The thinking alias reserves a `1024` token reasoning budget, so set
+`max_tokens` high enough to leave room for the final answer.
+
+Image prompts use OpenAI-compatible `image_url` content blocks. The local
+worker loads `mmproj-F16.gguf` through the systemd service, so image
+understanding stays local.
+
 Quick tunnels do not support SSE reliably, so use `"stream": false` during this
 temporary stage.
+
+## File Inputs
+
+Open WebUI is built from a pinned upstream image plus a small local patch:
+
+```text
+open-webui/Dockerfile
+open-webui/patch_file_context.py
+```
+
+Small text/code uploads up to `128 KiB` are injected as raw full context so the
+model can inspect the actual source, including HTML/JS/CSS that normal document
+extraction may strip. Larger files and non-text formats continue through Open
+WebUI retrieval/RAG.
+
+The patched image is tagged locally as:
+
+```text
+llm-hub-open-webui:0.9.2-file-context
+```
 
 ## Health Checks
 

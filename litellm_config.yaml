@@ -5,6 +5,24 @@ model_list:
       api_base: http://127.0.0.1:8081/v1
       api_key: local-llama-cpp
       timeout: 600
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+    model_info:
+      description: Local Qwen3.6-27B, normal non-thinking mode.
+
+  - model_name: qwen3.6-27b-thinking
+    litellm_params:
+      model: openai/qwen3.6-27b
+      api_base: http://127.0.0.1:8081/v1
+      api_key: local-llama-cpp
+      timeout: 600
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: true
+        thinking_budget_tokens: 1024
+    model_info:
+      description: Local Qwen3.6-27B with llama.cpp thinking enabled.
 
 litellm_settings:
   drop_params: true
